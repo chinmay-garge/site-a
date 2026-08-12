@@ -1,0 +1,13 @@
+{
+  "sections": {
+    "main": {
+      "type": "main-page",
+      "settings": { "padding_top": 28, "padding_bottom": 28 }
+    },
+    "hero": {
+      "type": "sandbox-hero",
+      "settings": { "heading": "A brand new page", "use_h1": true }
+    }
+  },
+  "order": ["main", "hero"]
+}
