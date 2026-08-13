@@ -21,7 +21,7 @@
       "settings": {
         "heading": "Content the editor changed",
         "body": "<p>This text was changed on staging and should reach production only after a promote.</p>",
-        "revision": "r4-clitest",
+        "revision": "r5-promote-retest",
         "padding": 32
       }
     }
