@@ -19,7 +19,7 @@
     "editable": {
       "type": "sandbox-content-block",
       "settings": {
-        "heading": "Content the editor changed",
+        "heading": "Changes to other heading",
         "body": "<p>This text was changed on staging and should reach production only after a promote.</p>",
         "revision": "r5-promote-retest",
         "padding": 32
