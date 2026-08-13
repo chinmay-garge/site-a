@@ -1,0 +1,138 @@
+name: Direct Live-Edit Alert
+
+# Catches the negative test case: someone edits the LIVE theme directly in the
+# Shopify admin, bypassing staging and the whole promote/approve pipeline.
+# Staging should always be ahead of Prod; a direct live edit breaks that.
+#
+# Why this isn't as simple as "alert on any Shopify commit"
+# -----------------------------------------------------------
+# The `main` branch is connected to the live theme, so Shopify echoes EVERY
+# change back as a commit authored by `shopify[bot]` — including the echo that
+# follows our OWN approved promotes and deploys. A workflow that alerts on
+# every such commit would fire on every legitimate promotion too, and get
+# ignored within a day.
+#
+# The actual signal: an echo is expected when it only contains files we JUST
+# committed ourselves. It's suspicious when it contains a file nobody on our
+# side touched. So this walks back from the echo commit to the last commit
+# NOT authored by shopify[bot] (our last intentional change), and compares:
+#   - INTENDED = files that commit itself changed
+#   - ECHOED   = files changed by every shopify[bot] commit since then
+# Anything in ECHOED but not in INTENDED came from somewhere other than our
+# pipeline — that's the alert.
+#
+# Delivery: a GitHub issue assigned to ALERT_RECIPIENTS, rather than SMTP.
+# GitHub emails assignees automatically — real email, no mail credentials to
+# manage.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    name: Check for an unexpected live edit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Is this even a Shopify echo commit?
+        id: gate
+        run: |
+          set -euo pipefail
+          AUTHOR=$(git log -1 --format=%an HEAD)
+          echo "author=$AUTHOR"
+          if [ "$AUTHOR" != "shopify[bot]" ]; then
+            echo "is_echo=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_echo=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Walk back to our last intentional commit
+        id: walk
+        if: steps.gate.outputs.is_echo == 'true'
+        run: |
+          set -euo pipefail
+          CUR=HEAD
+          # Walk back through consecutive shopify[bot] commits to find BASE:
+          # the nearest ancestor we actually authored ourselves.
+          while true; do
+            PARENT="$CUR^"
+            PARENT_SHA=$(git rev-parse "$PARENT")
+            PARENT_AUTHOR=$(git log -1 --format=%an "$PARENT_SHA")
+            if [ "$PARENT_AUTHOR" != "shopify[bot]" ]; then
+              echo "base=$PARENT_SHA" >> "$GITHUB_OUTPUT"
+              break
+            fi
+            CUR="$PARENT"
+          done
+
+      - name: Compare what was intended against what was echoed
+        id: compare
+        if: steps.gate.outputs.is_echo == 'true'
+        env:
+          BASE: ${{ steps.walk.outputs.base }}
+        run: |
+          set -euo pipefail
+          INTENDED=$(git diff --name-only "$BASE^" "$BASE" | sort)
+          ECHOED=$(git diff --name-only "$BASE" HEAD | sort)
+          EXTRA=$(comm -23 <(echo "$ECHOED") <(echo "$INTENDED") | sed '/^$/d')
+
+          echo "Our last commit ($BASE) intentionally changed:"
+          echo "$INTENDED"
+          echo "Shopify has echoed back since then:"
+          echo "$ECHOED"
+
+          if [ -n "$EXTRA" ]; then
+            echo "unexpected=true" >> "$GITHUB_OUTPUT"
+            {
+              echo "extra<<EOF"
+              echo "$EXTRA"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+          else
+            echo "unexpected=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Alert — assign an issue so GitHub emails the approver(s)
+        if: steps.gate.outputs.is_echo == 'true' && steps.compare.outputs.unexpected == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RECIPIENTS: ${{ vars.ALERT_RECIPIENTS }}
+          EXTRA: ${{ steps.compare.outputs.extra }}
+        run: |
+          set -euo pipefail
+          gh label create "live-edit-alert" --repo "$GITHUB_REPOSITORY" \
+            --color d93f0b -d "Live theme changed outside the normal promote pipeline" 2>/dev/null || true
+
+          {
+            echo "**A file on the live theme changed without going through staging or promote.**"
+            echo ""
+            echo "Staging is supposed to always be ahead of production — this breaks that."
+            echo "Someone likely edited the live theme directly in the Shopify admin."
+            echo ""
+            echo "Files involved:"
+            echo '```'
+            echo "$EXTRA"
+            echo '```'
+            echo ""
+            echo "Commit: ${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}"
+            echo ""
+            echo "**Recommended next step:** check whether this change should be kept."
+            echo "If yes, get it into \`staging\` too so both stay in sync."
+            echo "If not, it can be reverted like any promoted change."
+          } > alert.md
+
+          ASSIGNEES=$(echo "$RECIPIENTS" | tr ',' '\n' | sed '/^$/d' | xargs | tr ' ' ',')
+
+          gh issue create --repo "$GITHUB_REPOSITORY" \
+            --title "Live theme edited directly, outside the pipeline" \
+            --label "live-edit-alert" \
+            --assignee "$ASSIGNEES" \
+            --body-file alert.md
