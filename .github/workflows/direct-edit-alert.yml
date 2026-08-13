@@ -4,26 +4,28 @@ name: Direct Live-Edit Alert
 # Shopify admin, bypassing staging and the whole promote/approve pipeline.
 # Staging should always be ahead of Prod; a direct live edit breaks that.
 #
-# Why this isn't as simple as "alert on any Shopify commit"
-# -----------------------------------------------------------
-# The `main` branch is connected to the live theme, so Shopify echoes EVERY
-# change back as a commit authored by `shopify[bot]` — including the echo that
-# follows our OWN approved promotes and deploys. A workflow that alerts on
-# every such commit would fire on every legitimate promotion too, and get
-# ignored within a day.
+# Why "any shopify[bot] commit = alert" does not work
+# -----------------------------------------------------
+# `main` is connected to the live theme, so Shopify echoes EVERY theme change
+# back as a commit authored by `shopify[bot]` — including the echo that
+# follows our OWN approved promotes and code deploys. A workflow that alerts
+# on every such commit fires on every legitimate release too.
 #
-# The actual signal: an echo is expected when it only contains files we JUST
-# committed ourselves. It's suspicious when it contains a file nobody on our
-# side touched. So this walks back from the echo commit to the last commit
-# NOT authored by shopify[bot] (our last intentional change), and compares:
-#   - INTENDED = files that commit itself changed
-#   - ECHOED   = files changed by every shopify[bot] commit since then
-# Anything in ECHOED but not in INTENDED came from somewhere other than our
-# pipeline — that's the alert.
+# A first version tried to fix this by walking back to "the last commit we
+# made ourselves" and comparing file lists. That FAILED in testing: code
+# deploys are pushed via the Shopify CLI from a different repo
+# (shopify-common) — they never create a matching commit inside this repo's
+# own history, so every legitimate code deploy looked "unexpected" and fired a
+# false alarm. Confirmed by testing, not assumed.
 #
-# Delivery: a GitHub issue assigned to ALERT_RECIPIENTS, rather than SMTP.
-# GitHub emails assignees automatically — real email, no mail credentials to
-# manage.
+# The check that actually holds up: compare the echoed file's CONTENT against
+# its real source of truth, not against this repo's commit history.
+#   - code files (sections/snippets/blocks/layout/assets) -> source of truth
+#     is shopify-common's theme/
+#   - content files (templates/, config/settings_data.json) -> source of
+#     truth is THIS repo's own `staging` branch (what promote reads from)
+# If the live file matches its source, the echo is expected, however it got
+# there. If it matches neither, nothing on our side produced it.
 
 on:
   push:
@@ -38,64 +40,86 @@ jobs:
     name: Check for an unexpected live edit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
       - name: Is this even a Shopify echo commit?
         id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          AUTHOR=$(git log -1 --format=%an HEAD)
+          AUTHOR=$(gh api "repos/$GITHUB_REPOSITORY/commits/${{ github.sha }}" --jq '.commit.author.name')
           echo "author=$AUTHOR"
-          if [ "$AUTHOR" != "shopify[bot]" ]; then
-            echo "is_echo=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "is_echo=true" >> "$GITHUB_OUTPUT"
-          fi
+          [ "$AUTHOR" = "shopify[bot]" ] && echo "is_echo=true" >> "$GITHUB_OUTPUT" || echo "is_echo=false" >> "$GITHUB_OUTPUT"
 
-      - name: Walk back to our last intentional commit
-        id: walk
+      - uses: actions/checkout@v4
         if: steps.gate.outputs.is_echo == 'true'
-        run: |
-          set -euo pipefail
-          CUR=HEAD
-          # Walk back through consecutive shopify[bot] commits to find BASE:
-          # the nearest ancestor we actually authored ourselves.
-          while true; do
-            PARENT="$CUR^"
-            PARENT_SHA=$(git rev-parse "$PARENT")
-            PARENT_AUTHOR=$(git log -1 --format=%an "$PARENT_SHA")
-            if [ "$PARENT_AUTHOR" != "shopify[bot]" ]; then
-              echo "base=$PARENT_SHA" >> "$GITHUB_OUTPUT"
-              break
-            fi
-            CUR="$PARENT"
-          done
+        with:
+          path: site
+          fetch-depth: 2
 
-      - name: Compare what was intended against what was echoed
+      # actions/checkout with a single ref does not fetch other branches —
+      # `origin/staging` would not exist locally otherwise, and the content-file
+      # comparison below depends on it.
+      - name: Fetch the staging branch too
+        if: steps.gate.outputs.is_echo == 'true'
+        working-directory: site
+        run: git fetch origin staging
+
+      - uses: actions/checkout@v4
+        if: steps.gate.outputs.is_echo == 'true'
+        with:
+          repository: chinmay-garge/shopify-common
+          path: hub
+          ref: main
+          token: ${{ secrets.ACCESS_PAT }}
+
+      - name: Compare the echoed files against their real source of truth
         id: compare
         if: steps.gate.outputs.is_echo == 'true'
-        env:
-          BASE: ${{ steps.walk.outputs.base }}
         run: |
           set -euo pipefail
-          INTENDED=$(git diff --name-only "$BASE^" "$BASE" | sort)
-          ECHOED=$(git diff --name-only "$BASE" HEAD | sort)
-          EXTRA=$(comm -23 <(echo "$ECHOED") <(echo "$INTENDED") | sed '/^$/d')
+          cd site
+          CHANGED=$(git diff --name-only HEAD^ HEAD)
+          echo "Changed in this echo commit:"
+          echo "$CHANGED"
 
-          echo "Our last commit ($BASE) intentionally changed:"
-          echo "$INTENDED"
-          echo "Shopify has echoed back since then:"
-          echo "$ECHOED"
+          strip_banner() { sed -e '1{/^\s*\/\*/,/\*\//d}' "$1" 2>/dev/null || true; }
 
+          EXTRA=""
+          for f in $CHANGED; do
+            actual=$(git show HEAD:"$f" 2>/dev/null || echo "__MISSING__")
+
+            case "$f" in
+              templates/*|config/settings_data.json)
+                # Content: source of truth is this repo's own staging branch.
+                expected=$(git show origin/staging:"$f" 2>/dev/null || echo "__ABSENT_FROM_STAGING__")
+                ;;
+              *)
+                # Code: source of truth is shopify-common's theme/.
+                if [ -f "../hub/theme/$f" ]; then
+                  expected=$(cat "../hub/theme/$f")
+                else
+                  expected="__ABSENT_FROM_SHOPIFY_COMMON__"
+                fi
+                ;;
+            esac
+
+            # Normalise: strip Shopify's auto-generated banner and surrounding
+            # whitespace before comparing, so reformatting alone is not a mismatch.
+            norm_actual=$(echo "$actual" | sed '1{/^\s*\/\*/,/\*\//d}' | tr -d '[:space:]')
+            norm_expected=$(echo "$expected" | sed '1{/^\s*\/\*/,/\*\//d}' | tr -d '[:space:]')
+
+            if [ "$norm_actual" != "$norm_expected" ]; then
+              EXTRA="$EXTRA$f"$'\n'
+              echo "MISMATCH: $f does not match its source of truth"
+            else
+              echo "ok: $f matches its source of truth"
+            fi
+          done
+
+          EXTRA=$(echo "$EXTRA" | sed '/^$/d')
           if [ -n "$EXTRA" ]; then
             echo "unexpected=true" >> "$GITHUB_OUTPUT"
-            {
-              echo "extra<<EOF"
-              echo "$EXTRA"
-              echo "EOF"
-            } >> "$GITHUB_OUTPUT"
+            { echo "extra<<EOF"; echo "$EXTRA"; echo "EOF"; } >> "$GITHUB_OUTPUT"
           else
             echo "unexpected=false" >> "$GITHUB_OUTPUT"
           fi
@@ -112,10 +136,12 @@ jobs:
             --color d93f0b -d "Live theme changed outside the normal promote pipeline" 2>/dev/null || true
 
           {
-            echo "**A file on the live theme changed without going through staging or promote.**"
+            echo "**A file on the live theme does not match its source of truth.**"
             echo ""
-            echo "Staging is supposed to always be ahead of production — this breaks that."
-            echo "Someone likely edited the live theme directly in the Shopify admin."
+            echo "Code should match \`shopify-common\`'s \`theme/\`; content should match"
+            echo "this repo's own \`staging\` branch. Neither matched, which means the"
+            echo "change did not come from a code deploy or a promote — most likely"
+            echo "someone edited the live theme directly in the Shopify admin."
             echo ""
             echo "Files involved:"
             echo '```'
@@ -125,7 +151,8 @@ jobs:
             echo "Commit: ${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}"
             echo ""
             echo "**Recommended next step:** check whether this change should be kept."
-            echo "If yes, get it into \`staging\` too so both stay in sync."
+            echo "If yes, get it into \`staging\` (content) or \`shopify-common\` (code) too,"
+            echo "so the live theme is not the only place holding it."
             echo "If not, it can be reverted like any promoted change."
           } > alert.md
 
