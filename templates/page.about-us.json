@@ -12,10 +12,18 @@
     "hero": {
       "type": "sandbox-hero",
       "settings": {
-        "heading": "About Us",
-        "use_h1": true
+        "eyebrow": "",
+        "heading": "About Us Edited",
+        "body": "",
+        "use_h1": true,
+        "cta_label": "",
+        "cta_url": "",
+        "padding_top": 40,
+        "padding_bottom": 40
       }
     }
   },
-  "order": ["hero"]
+  "order": [
+    "hero"
+  ]
 }
