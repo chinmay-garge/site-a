@@ -39,3 +39,5 @@ shared theme, and they are deliberately awkward:
 
 so porting it carelessly reproduces the exact missing-translation bug that
 reached a real store. See `docs/TEST-PLAN.md` in `shopify-common` (F1).
+
+Durability probe: does a commit here re-sync the whole branch to the theme?
