@@ -10,9 +10,9 @@
     "editable": {
       "type": "sandbox-content-block",
       "settings": {
-        "heading": "Editable content",
-        "body": "<p>Edited by a content editor in the theme editor.</p>",
-        "revision": "r2",
+        "heading": "Content the editor changed",
+        "body": "<p>This text was changed on staging and should reach production only after a promote.</p>",
+        "revision": "r3-promoted",
         "padding": 32
       }
     }
