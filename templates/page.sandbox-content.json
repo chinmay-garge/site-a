@@ -21,7 +21,7 @@
       "settings": {
         "heading": "Testing auto-diff-on-refresh",
         "body": "<p>This text was changed on staging and should reach production only after a promote.</p>",
-        "revision": "r5-promote-retest",
+        "revision": "r6-comment-approve-test",
         "padding": 32
       }
     }
