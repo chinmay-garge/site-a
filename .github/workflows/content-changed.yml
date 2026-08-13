@@ -16,7 +16,10 @@ name: Notify content change
 
 on:
   push:
-    branches: [main]
+    # `staging`, not `main`. Editors work in the Staging theme, which is connected
+    # to this branch — so that is where their commits land. Watching `main` meant
+    # this never fired for a real editor change, only for our simulated ones.
+    branches: [staging]
     paths:
       - 'templates/**.json'
       - 'sections/*.json'
