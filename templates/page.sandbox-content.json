@@ -19,7 +19,7 @@
     "editable": {
       "type": "sandbox-content-block",
       "settings": {
-        "heading": "Changes to other heading",
+        "heading": "Testing auto-diff-on-refresh",
         "body": "<p>This text was changed on staging and should reach production only after a promote.</p>",
         "revision": "r5-promote-retest",
         "padding": 32
