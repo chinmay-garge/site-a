@@ -75,10 +75,40 @@
         "mobile_content_alignment": "center",
         "show_text_below": false
       }
+    },
+    "sandbox_cards_HTtAFK": {
+      "type": "sandbox-cards",
+      "blocks": {
+        "card_k8Q3DF": {
+          "type": "card",
+          "settings": {
+            "title": "Card title 1",
+            "text": "<p><br/>Card title 1<br/></p>"
+          }
+        },
+        "card_t6QLec": {
+          "type": "card",
+          "settings": {
+            "title": "Card title",
+            "text": ""
+          }
+        }
+      },
+      "block_order": [
+        "card_k8Q3DF",
+        "card_t6QLec"
+      ],
+      "name": "t:sections.sandbox-cards.name",
+      "settings": {
+        "heading": "Home Page Cards",
+        "padding_top": 40,
+        "padding_bottom": 40
+      }
     }
   },
   "order": [
     "featured_collection",
-    "image_banner"
+    "image_banner",
+    "sandbox_cards_HTtAFK"
   ]
 }
